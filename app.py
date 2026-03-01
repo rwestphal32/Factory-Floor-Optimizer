@@ -12,18 +12,15 @@ st.markdown("**Assumption:** Single shared production line running at ~80% basel
 WEEKS = [f"W{i+1}" for i in range(24)]
 PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
 
-# UPDATED ECONOMICS: Slower rates to drive realistic utilization
 FINANCIALS = {
     "Lifting Straps": {"price": 25, "cost": 10, "rate": 60, "co_time": 2, "co_cost": 500},
     "Weight Belts":  {"price": 85, "cost": 45, "rate": 25,  "co_time": 8, "co_cost": 2500},
     "Knee Sleeves":  {"price": 45, "cost": 22, "rate": 40,  "co_time": 4, "co_cost": 1200}
 }
 
-# --- 2. SIDEBAR CONTROLS (NOW WITH A SUBMIT BUTTON) ---
+# --- 2. SIDEBAR CONTROLS ---
 with st.sidebar:
     st.header("🏢 Operating Strategy")
-    
-    # Using a form stops the auto-refresh dimming
     with st.form("control_panel"):
         mode = st.radio("Model", ["Legacy: Max 1 Setup/Week (Big Batches)", "MILP: Value Optimized (Agile)"])
         
@@ -35,16 +32,14 @@ with st.sidebar:
         stockout_fine = st.slider("Lost Sale Penalty (£/unit)", 0, 50, 15)
         holding_cost = st.slider("Holding Cost (£/unit/wk)", 0.1, 2.0, 0.2)
         
-        # The button that triggers the run
         submitted = st.form_submit_button("🚀 Run Optimization")
 
-# --- 3. BASE DEMAND GENERATION (Higher Baseline) ---
+# --- 3. BASE DEMAND GENERATION ---
 @st.cache_data
 def get_base_demand():
     np.random.seed(42)
     data = {}
     for p in PRODUCTS:
-        # Higher baseline demand to ensure >75% utilization
         base = np.random.randint(800, 1200, 24)
         peak = [800 if 10 < i < 16 else 0 for i in range(24)] # Holiday Peak
         data[p] = {WEEKS[i]: base[i] + peak[i] for i in range(24)}
@@ -63,7 +58,6 @@ def optimize_operations(strat):
     rollover = pulp.LpVariable.dicts("Rollover", (PRODUCTS, WEEKS), lowBound=0)
     setup = pulp.LpVariable.dicts("Setup", (PRODUCTS, WEEKS), cat=pulp.LpBinary)
     
-    # Objective: Maximize Profit
     revenue = pulp.lpSum([sold[p][w] * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
     costs = pulp.lpSum([
         prod[p][w] * FINANCIALS[p]["cost"] + 
@@ -92,20 +86,31 @@ def optimize_operations(strat):
             prob += prod[p][w] <= 20000 * setup[p][w]
 
     for w in WEEKS:
-        # 1. Physical Capacity Constraint
+        # Physical Capacity Constraint
         prob += pulp.lpSum([(prod[p][w]/FINANCIALS[p]["rate"]) + (setup[p][w]*FINANCIALS[p]["co_time"]) for p in PRODUCTS]) <= weekly_capacity
         
-        # 2. LEGACY LOGIC: Factory manager says "Only 1 changeover per week allowed"
+        # Legacy Logic
         if strat == "Legacy: Max 1 Setup/Week (Big Batches)":
             prob += pulp.lpSum([setup[p][w] for p in PRODUCTS]) <= 1
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
-    return prod, inv, sold, short, roll, setup
+    # THE FIX: Added a 10-second time limit so it never hangs
+    prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=10))
+    return prob, prod, inv, sold, short, roll, setup
 
-# Calculate everything
-prod_v, inv_v, sold_v, short_v, roll_v, setup_v = optimize_operations(mode)
+# Helper function to prevent crashes if solver hits time limit
+def get_val(var):
+    return var.varValue if var.varValue is not None else 0
 
-# --- 5. TABS & VISUALS ---
+# --- 5. EXECUTION ---
+# UI Spinner so you know it's working
+with st.spinner("Crunching the MILP Matrix (This may take up to 10 seconds)..."):
+    prob_status, prod_v, inv_v, sold_v, short_v, roll_v, setup_v = optimize_operations(mode)
+
+# Warn if the time limit was hit
+if pulp.LpStatus[prob_status.status] != 'Optimal':
+    st.warning(f"Solver Status: {pulp.LpStatus[prob_status.status]}. The problem is highly constrained. Displaying the best solution found within the time limit.")
+
+# --- 6. TABS & VISUALS ---
 tab1, tab2, tab3, tab4 = st.tabs(["💰 Item Economics", "⚙️ Line Utilization", "📦 Supply/Demand Audit", "📈 P&L Statement"])
 
 with tab1:
@@ -128,8 +133,8 @@ with tab2:
         row = {"Week": w}
         total_hrs = 0
         for p in PRODUCTS:
-            p_hrs = prod_v[p][w].varValue / FINANCIALS[p]["rate"]
-            s_hrs = setup_v[p][w].varValue * FINANCIALS[p]["co_time"]
+            p_hrs = get_val(prod_v[p][w]) / FINANCIALS[p]["rate"]
+            s_hrs = get_val(setup_v[p][w]) * FINANCIALS[p]["co_time"]
             total_hrs += (p_hrs + s_hrs)
             
             status = []
@@ -150,7 +155,7 @@ with tab3:
     audit_data = []
     for i, w in enumerate(WEEKS):
         base = BASE_DEMAND[sku][w]
-        roll = roll_v[sku][WEEKS[i-1]].varValue if i > 0 else 0
+        roll = get_val(roll_v[sku][WEEKS[i-1]]) if i > 0 else 0
         tot_dem = base + roll
         
         audit_data.append({
@@ -158,21 +163,21 @@ with tab3:
             "Base Demand": int(base),
             "+ Rollover In": int(roll),
             "= Total Demand": int(tot_dem),
-            "Production": int(prod_v[sku][w].varValue),
-            "Units Sold": int(sold_v[sku][w].varValue),
-            "Ending Inventory": int(inv_v[sku][w].varValue),
-            "Missed (Shortage)": int(short_v[sku][w].varValue)
+            "Production": int(get_val(prod_v[sku][w])),
+            "Units Sold": int(get_val(sold_v[sku][w])),
+            "Ending Inventory": int(get_val(inv_v[sku][w])),
+            "Missed (Shortage)": int(get_val(short_v[sku][w]))
         })
     st.dataframe(pd.DataFrame(audit_data), use_container_width=True)
 
 with tab4:
     st.subheader(f"Strategic P&L ({mode})")
     
-    rev = sum([sold_v[p][w].varValue * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
-    cogs = sum([prod_v[p][w].varValue * FINANCIALS[p]["cost"] for p in PRODUCTS for w in WEEKS])
-    setups = sum([setup_v[p][w].varValue * FINANCIALS[p]["co_cost"] for p in PRODUCTS for w in WEEKS])
-    holding = sum([inv_v[p][w].varValue * holding_cost for p in PRODUCTS for w in WEEKS])
-    fines = sum([short_v[p][w].varValue * stockout_fine for p in PRODUCTS for w in WEEKS])
+    rev = sum([get_val(sold_v[p][w]) * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
+    cogs = sum([get_val(prod_v[p][w]) * FINANCIALS[p]["cost"] for p in PRODUCTS for w in WEEKS])
+    setups = sum([get_val(setup_v[p][w]) * FINANCIALS[p]["co_cost"] for p in PRODUCTS for w in WEEKS])
+    holding = sum([get_val(inv_v[p][w]) * holding_cost for p in PRODUCTS for w in WEEKS])
+    fines = sum([get_val(short_v[p][w]) * stockout_fine for p in PRODUCTS for w in WEEKS])
     
     net = rev - (cogs + setups + holding + fines)
     
