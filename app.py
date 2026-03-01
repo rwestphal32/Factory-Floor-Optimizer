@@ -108,7 +108,7 @@ with st.sidebar:
         except Exception:
             st.warning("Could not read Quarterly_Forecast sheet. Using default parameters.")
 
-    if st.button("🎲 Generate Apples-to-Apples Demand Path"):
+    if st.button("🎲 Generate Demand Path"):
         generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS)
         st.success("Demand Path Locked! Ready for Scenario testing.")
 
