@@ -4,111 +4,55 @@ import numpy as np
 import pulp
 import io
 
-st.set_page_config(page_title="PwC Value Creation: Operations Masterclass", layout="wide")
+st.set_page_config(page_title="PwC Value Creation: S&OP Masterclass", layout="wide")
 
-st.title("💎 Strategy & Value Creation: High-Utilization Optimizer")
-st.markdown("**Assumption:** Single shared production line. Upload your own Excel data or use the default Demo scenario.")
+st.title("💎 Strategy & Value Creation: S&OP Aligned Optimizer")
+st.markdown("**Assumption:** Single shared line. 'Expedite Premiums' are earned on any upside demand delivered above the upfront Quarterly Forecast, regardless of how it was sourced.")
 
-# --- 1. DEFAULT DATA (Demo Mode) ---
-DEFAULT_WEEKS = [f"W{i+1}" for i in range(12)]
-DEFAULT_PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
+# --- 1. CONFIGURATION ---
+WEEKS = [f"W{i+1}" for i in range(12)]
+PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
 
-DEFAULT_FINANCIALS = {
+FINANCIALS = {
     "Lifting Straps": {"price": 25, "cost": 10, "rate": 60, "co_time": 2, "co_cost": 500},
     "Weight Belts":  {"price": 85, "cost": 45, "rate": 25,  "co_time": 8, "co_cost": 2500},
     "Knee Sleeves":  {"price": 45, "cost": 22, "rate": 40,  "co_time": 4, "co_cost": 1200}
 }
 
-@st.cache_data
-def get_default_demand():
-    np.random.seed(42)
-    data = {}
-    for p in DEFAULT_PRODUCTS:
-        base = np.random.randint(800, 1200, 12)
-        peak = [800 if 4 < i < 8 else 0 for i in range(12)] 
-        data[p] = {DEFAULT_WEEKS[i]: base[i] + peak[i] for i in range(12)}
-    return data
-
-DEFAULT_DEMAND = get_default_demand()
-
-# --- 2. EXCEL TEMPLATE GENERATOR ---
-def generate_excel_template():
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # Economics Sheet
-        eco_df = pd.DataFrame([
-            {"Product": "Lifting Straps", "Price": 25, "Cost": 10, "Rate": 60, "Setup_Time": 2, "Setup_Cost": 500},
-            {"Product": "Weight Belts", "Price": 85, "Cost": 45, "Rate": 25, "Setup_Time": 8, "Setup_Cost": 2500},
-            {"Product": "Knee Sleeves", "Price": 45, "Cost": 22, "Rate": 40, "Setup_Time": 4, "Setup_Cost": 1200}
-        ])
-        eco_df.to_excel(writer, sheet_name="Economics", index=False)
-        
-        # Demand Sheet
-        dem_data = {"Product": ["Lifting Straps", "Weight Belts", "Knee Sleeves"]}
-        for w in DEFAULT_WEEKS:
-            dem_data[w] = [DEFAULT_DEMAND[p][w] for p in DEFAULT_PRODUCTS]
-        pd.DataFrame(dem_data).to_excel(writer, sheet_name="Demand", index=False)
-    return output.getvalue()
-
-# --- 3. SIDEBAR: DATA UPLOAD & CONTROLS ---
+# --- 2. SIDEBAR CONTROLS ---
 with st.sidebar:
-    st.header("📂 1. Data Input")
-    st.download_button(
-        label="📥 Download Data Template",
-        data=generate_excel_template(),
-        file_name="pwc_optimization_template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    
-    uploaded_file = st.file_uploader("Upload filled Excel Template", type=["xlsx"])
-    
-    st.markdown("---")
-    st.header("🏢 2. Strategy & Parameters")
+    st.header("🏢 Operating Strategy")
     with st.form("control_panel"):
         mode = st.radio("Model", ["Legacy: Max 1 Setup/Week (Big Batches)", "MILP: Value Optimized (Agile)"])
+        
+        st.header("⚙️ Capacity")
         weekly_capacity = st.slider("Weekly Machine Hours", 80, 168, 120)
+        
+        st.header("📊 S&OP Commercial Contracts")
         rollover_pct = st.slider("Demand Rollover (%)", 0, 100, 50) / 100.0
-        stockout_fine = st.slider("Lost Sale Penalty (£/unit)", 0, 50, 15)
+        stockout_fine = st.slider("Base Shortage Fine (£)", 0, 50, 15)
         holding_cost = st.slider("Holding Cost (£/unit/wk)", 0.1, 2.0, 0.2)
-        agility_premium = st.slider("Agility Premium (£/unit in stock)", 0, 15, 5)
+        expedite_premium = st.slider("Expedite Upside Premium (£)", 0, 15, 5)
+        st.caption("Premium paid on 'Weekly Chase' units delivered above the upfront forecast.")
         
-        submitted = st.form_submit_button("🚀 Run Optimization")
+        submitted = st.form_submit_button("🚀 Run S&OP Optimization")
 
-# --- 4. DATA PROCESSING (Excel or Demo) ---
-try:
-    if uploaded_file is not None:
-        # Read user data
-        eco_df = pd.read_excel(uploaded_file, sheet_name="Economics")
-        dem_df = pd.read_excel(uploaded_file, sheet_name="Demand")
-        
-        PRODUCTS = eco_df["Product"].tolist()
-        WEEKS = [col for col in dem_df.columns if col != "Product"]
-        
-        FINANCIALS = {}
-        for _, row in eco_df.iterrows():
-            FINANCIALS[row["Product"]] = {
-                "price": row["Price"], "cost": row["Cost"], 
-                "rate": row["Rate"], "co_time": row["Setup_Time"], "co_cost": row["Setup_Cost"]
-            }
-            
-        BASE_DEMAND = {}
-        for _, row in dem_df.iterrows():
-            BASE_DEMAND[row["Product"]] = {w: row[w] for w in WEEKS}
-            
-        st.success(f"✅ Loaded Custom Data: {len(PRODUCTS)} Products over {len(WEEKS)} Weeks.")
-    else:
-        # Use Demo Data
-        PRODUCTS = DEFAULT_PRODUCTS
-        WEEKS = DEFAULT_WEEKS
-        FINANCIALS = DEFAULT_FINANCIALS
-        BASE_DEMAND = DEFAULT_DEMAND
-        st.info("ℹ️ Using Demo Data. Upload an Excel file to run your own scenario.")
+# --- 3. S&OP DEMAND GENERATION ---
+@st.cache_data
+def get_sop_demand():
+    np.random.seed(42)
+    q_forecast = {}
+    w_chase = {}
+    for p in PRODUCTS:
+        # Quarterly Upfront Forecast (Locked in months ago)
+        q_forecast[p] = {WEEKS[i]: np.random.randint(800, 1200) for i in range(12)}
+        # Weekly Updated Forecast Delta (The short-timeline "Chase" demand)
+        w_chase[p] = {WEEKS[i]: (800 if 4 < i < 8 else 0) for i in range(12)}
+    return q_forecast, w_chase
 
-except Exception as e:
-    st.error(f"❌ Error reading Excel file. Please ensure it matches the downloaded template format. ({str(e)})")
-    st.stop() # Stop execution if data is broken
+UPFRONT_FORECAST, WEEKLY_CHASE = get_sop_demand()
 
-# --- 5. THE SOLVER ---
+# --- 4. THE SOLVER ---
 def optimize_operations(strat, capacity_limit):
     prob = pulp.LpProblem("Value_Model", pulp.LpMaximize)
     
@@ -119,8 +63,13 @@ def optimize_operations(strat, capacity_limit):
     rollover = pulp.LpVariable.dicts("Rollover", (PRODUCTS, WEEKS), lowBound=0)
     setup = pulp.LpVariable.dicts("Setup", (PRODUCTS, WEEKS), cat=pulp.LpBinary)
     
+    # NEW: Variable tracking units sold specifically against the "Chase" upside
+    expedited_sold = pulp.LpVariable.dicts("ExpeditedSold", (PRODUCTS, WEEKS), lowBound=0)
+    
+    # Objective: Standard Revenue + Expedite Premium - Costs
     revenue = pulp.lpSum([sold[p][w] * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
-    agility_rev = pulp.lpSum([inv[p][w] * agility_premium for p in PRODUCTS for w in WEEKS])
+    expedite_rev = pulp.lpSum([expedited_sold[p][w] * expedite_premium for p in PRODUCTS for w in WEEKS])
+    
     costs = pulp.lpSum([
         prod[p][w] * FINANCIALS[p]["cost"] + 
         inv[p][w] * holding_cost + 
@@ -128,22 +77,33 @@ def optimize_operations(strat, capacity_limit):
         shortage[p][w] * stockout_fine 
         for p in PRODUCTS for w in WEEKS
     ])
-    prob += revenue + agility_rev - costs
+    prob += revenue + expedite_rev - costs
 
     for p in PRODUCTS:
         for i, w in enumerate(WEEKS):
-            if i == 0: total_demand = BASE_DEMAND[p][w]
-            else: total_demand = BASE_DEMAND[p][w] + rollover[p][WEEKS[i-1]]
+            # Total demand is Upfront Forecast + Weekly Chase + Missed Rollover
+            if i == 0: total_demand = UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w]
+            else: total_demand = UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w] + rollover[p][WEEKS[i-1]]
             
             prob += sold[p][w] <= total_demand
-            if i == 0: prob += sold[p][w] <= prod[p][w]
-            else: prob += sold[p][w] <= inv[p][WEEKS[i-1]] + prod[p][w]
+            
+            # Flow Balance
+            if i == 0: 
+                prob += sold[p][w] <= prod[p][w]
+                prob += prod[p][w] - sold[p][w] == inv[p][w]
+            else: 
+                prob += sold[p][w] <= inv[p][WEEKS[i-1]] + prod[p][w]
+                prob += inv[p][WEEKS[i-1]] + prod[p][w] - sold[p][w] == inv[p][w]
+                
+            # S&OP CONTRACT LOGIC (Fixed based on user feedback):
+            # 1. You can only claim the expedite premium up to the amount of the actual Weekly Chase delta.
+            prob += expedited_sold[p][w] <= WEEKLY_CHASE[p][w]
+            # 2. You can't claim expedite premium on units you didn't actually sell.
+            # (Notice we removed the constraint forcing it to come from inventory!)
+            prob += expedited_sold[p][w] <= sold[p][w]
                 
             prob += shortage[p][w] == total_demand - sold[p][w]
             prob += rollover[p][w] == shortage[p][w] * rollover_pct
-            
-            if i == 0: prob += prod[p][w] - sold[p][w] == inv[p][w]
-            else: prob += inv[p][WEEKS[i-1]] + prod[p][w] - sold[p][w] == inv[p][w]
             
             max_possible_production = capacity_limit * FINANCIALS[p]["rate"]
             prob += prod[p][w] <= max_possible_production * setup[p][w]
@@ -154,34 +114,36 @@ def optimize_operations(strat, capacity_limit):
             prob += pulp.lpSum([setup[p][w] for p in PRODUCTS]) <= 1
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=10))
-    return prob, prod, inv, sold, shortage, rollover, setup
+    return prob, prod, inv, sold, shortage, rollover, setup, expedited_sold
 
-# --- 6. EXECUTION ---
+# --- 5. EXECUTION ---
 def get_val(var):
     return var.varValue if var.varValue is not None else 0
 
 with st.spinner("Crunching the MILP Matrix (This may take up to 10 seconds)..."):
-    prob_status, prod_v, inv_v, sold_v, short_v, roll_v, setup_v = optimize_operations(mode, weekly_capacity)
+    prob_status, prod_v, inv_v, sold_v, short_v, roll_v, setup_v, expedite_v = optimize_operations(mode, weekly_capacity)
 
 if pulp.LpStatus[prob_status.status] != 'Optimal':
-    st.warning(f"⚠️ **Optimality Gap Detected:** Status: {pulp.LpStatus[prob_status.status]}. Displaying best margin found within time limit.")
+    st.warning(f"⚠️ **Optimality Gap Detected:** Status: {pulp.LpStatus[prob_status.status]}.")
+else:
+    st.success("✅ **S&OP Optimized Schedule Found**")
 
-# --- 7. TABS & VISUALS ---
+# --- 6. TABS & VISUALS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Strategic P&L", "⚙️ Line Utilization", "📦 Supply/Demand Audit", "💰 Item Economics"])
 
 with tab1:
     st.subheader(f"Executive Summary: {mode}")
     
     rev = sum([get_val(sold_v[p][w]) * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
-    agility = sum([get_val(inv_v[p][w]) * agility_premium for p in PRODUCTS for w in WEEKS])
+    expedite_rev = sum([get_val(expedite_v[p][w]) * expedite_premium for p in PRODUCTS for w in WEEKS])
     cogs = sum([get_val(prod_v[p][w]) * FINANCIALS[p]["cost"] for p in PRODUCTS for w in WEEKS])
     setups = sum([get_val(setup_v[p][w]) * FINANCIALS[p]["co_cost"] for p in PRODUCTS for w in WEEKS])
     holding = sum([get_val(inv_v[p][w]) * holding_cost for p in PRODUCTS for w in WEEKS])
     fines = sum([get_val(short_v[p][w]) * stockout_fine for p in PRODUCTS for w in WEEKS])
     
-    net = (rev + agility) - (cogs + setups + holding + fines)
+    net = (rev + expedite_rev) - (cogs + setups + holding + fines)
     
-    glob_demand = sum([BASE_DEMAND[p][w] + (get_val(roll_v[p][WEEKS[WEEKS.index(w)-1]]) if WEEKS.index(w) > 0 else 0) for p in PRODUCTS for w in WEEKS])
+    glob_demand = sum([UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w] + (get_val(roll_v[p][WEEKS[WEEKS.index(w)-1]]) if WEEKS.index(w) > 0 else 0) for p in PRODUCTS for w in WEEKS])
     glob_sold = sum([get_val(sold_v[p][w]) for p in PRODUCTS for w in WEEKS])
     service_level = (glob_sold / glob_demand * 100) if glob_demand > 0 else 0
     
@@ -197,8 +159,8 @@ with tab1:
     st.markdown("---")
     
     pl_df = pd.DataFrame({
-        "Financial Line Item": ["Gross Sales Revenue", "Agility Premium Earned", "Total COGS", "Changeover Expenses", "Inventory Carrying Costs", "Stockout/Late Fines", "NET CONTRIBUTION"],
-        "Amount (£)": [rev, agility, -cogs, -setups, -holding, -fines, net]
+        "Financial Line Item": ["Gross Base Revenue", "Expedite 'Chase' Premium", "Total COGS", "Changeover Expenses", "Inventory Carrying Costs", "Stockout/Late Fines", "NET CONTRIBUTION"],
+        "Amount (£)": [rev, expedite_rev, -cogs, -setups, -holding, -fines, net]
     })
     st.table(pl_df)
 
@@ -226,23 +188,25 @@ with tab2:
     st.dataframe(pd.DataFrame(sched_data), use_container_width=True)
 
 with tab3:
-    st.subheader("Transparent Inventory & Fulfillment Audit")
+    st.subheader("Transparent S&OP Fulfillment Audit")
     sku = st.selectbox("Select SKU to Audit", PRODUCTS)
     
     audit_data = []
     for i, w in enumerate(WEEKS):
-        base = BASE_DEMAND[sku][w]
+        forecast = UPFRONT_FORECAST[sku][w]
+        chase = WEEKLY_CHASE[sku][w]
         roll = get_val(roll_v[sku][WEEKS[i-1]]) if i > 0 else 0
-        tot_dem = base + roll
-        sold = get_val(sold_v[sku][w])
+        tot_dem = forecast + chase + roll
         
         audit_data.append({
             "Week": w,
-            "Base Demand": int(base),
+            "Quarterly Forecast": int(forecast),
+            "+ Weekly Chase": int(chase),
             "+ Rollover In": int(roll),
             "= Total Demand": int(tot_dem),
             "Production": int(get_val(prod_v[sku][w])),
-            "Units Sold": int(sold),
+            "Units Sold": int(get_val(sold_v[sku][w])),
+            "Expedite Bonus Earned": int(get_val(expedite_v[sku][w])),
             "Ending Inventory": int(get_val(inv_v[sku][w])),
             "Missed (Shortage)": int(get_val(short_v[sku][w]))
         })
@@ -265,3 +229,7 @@ with tab4:
             "Setup Cost": f"£{metrics['co_cost']}"
         })
     st.table(pd.DataFrame(eco_data))
+    
+    
+    
+    st.info("💡 **S&OP Alignment:** The app now treats 'Expedite Premiums' just like a real-world contract. If a client drops a massive 'Weekly Chase' order on you, you earn the premium on those extra units regardless of whether you pull them from a warehouse or rush them off the production line. The MILP is free to find the most mathematically profitable way to satisfy the customer.")
