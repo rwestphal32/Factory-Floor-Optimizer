@@ -78,7 +78,6 @@ with st.sidebar:
         labor_rate = st.slider("Direct Labor Rate (£/Hr)", 10, 50, 20)
         fixed_line_cost = st.slider("Fixed Line Overhead (£/Wk)", 1000, 10000, 3000)
         
-        # New Corporate Finance metrics
         wc_rate = st.slider("Working Capital Rate (%/Wk)", 0.0, 1.0, 0.2) / 100.0
         
         st.subheader("Physical Warehouse Limits")
@@ -86,6 +85,7 @@ with st.sidebar:
         max_fg_cbm = st.slider("Max FG Storage (CBM)", 500, 10000, 2500)
         wh_cbm_cost = st.slider("Warehouse Lease (£/CBM/Wk)", 0.5, 5.0, 1.5)
         
+        rollover_pct = 0.50 # Hardcoded to save UI space
         corp_tax = 0.25 # Fixed 25% 
         submitted = st.form_submit_button("🚀 Run 13-Week Monte Carlo")
 
@@ -99,9 +99,10 @@ try:
         for _, row in eco_df.iterrows():
             FINANCIALS[row["Product"]] = {
                 "price": row["Price"], "cost": row["Mat_Cost"], 
+                # .get() prevents crashes if uploading older excel files
                 "rm_cbm": row.get("RM_Vol_CBM", 0.02), "fg_cbm": row.get("FG_Vol_CBM", 0.03),
                 "fine": row["SLA_Fine"], "premium": row["Rush_Premium"],
-                "mean_dem": row["Mean_Demand"], "std_dev": row["Std_Dev"],
+                "mean_dem": row.get("Mean_Demand", 1500), "std_dev": row.get("Std_Dev", 300),
                 "L1": {"rate": row.get("L1_Rate", 0), "time": row.get("L1_Setup_Time", 0), "cost": row.get("L1_Setup_Cost", 0)},
                 "L2": {"rate": row.get("L2_Rate", 0), "time": row.get("L2_Setup_Time", 0), "cost": row.get("L2_Setup_Cost", 0)},
                 "L3": {"rate": row.get("L3_Rate", 0), "time": row.get("L3_Setup_Time", 0), "cost": row.get("L3_Setup_Cost", 0)}
@@ -135,14 +136,12 @@ def optimize_operations(lines, capacity_limit):
     line_active = pulp.LpVariable.dicts("LineActive", (lines, WEEKS), cat=pulp.LpBinary) 
     
     total_prod = pulp.LpVariable.dicts("TotalProd", (PRODUCTS, WEEKS), lowBound=0)
-    
-    # NEW: RM Variables
     rm_purchased = pulp.LpVariable.dicts("RMPurchased", (PRODUCTS, WEEKS), lowBound=0)
     rm_inv = pulp.LpVariable.dicts("RMInv", (PRODUCTS, WEEKS), lowBound=0)
-    
     fg_inv = pulp.LpVariable.dicts("FGInv", (PRODUCTS, WEEKS), lowBound=0)
     sold = pulp.LpVariable.dicts("Sold", (PRODUCTS, WEEKS), lowBound=0)
     shortage = pulp.LpVariable.dicts("Shortage", (PRODUCTS, WEEKS), lowBound=0)
+    rollover = pulp.LpVariable.dicts("Rollover", (PRODUCTS, WEEKS), lowBound=0)
     expedited_sold = pulp.LpVariable.dicts("ExpeditedSold", (PRODUCTS, WEEKS), lowBound=0)
     
     for p in PRODUCTS:
@@ -174,21 +173,16 @@ def optimize_operations(lines, capacity_limit):
     labor_cost = pulp.lpSum(labor_hours) * labor_rate
     overhead_cost = pulp.lpSum([line_active[l][w] * fixed_line_cost for l in lines for w in WEEKS])
     
-    # Fixed Lease Cost (Calculated outside solver, but subtracted from EBIT)
-    fixed_lease_cost = (max_rm_cbm + max_fg_cbm) * wh_cbm_cost * len(WEEKS)
-    
     prob += revenue + expedite_rev - (materials_cost + capital_cost + sla_fines + setup_fees + labor_cost + overhead_cost)
 
     for p in PRODUCTS:
         for i, w in enumerate(WEEKS):
             # RM Inventory Balance
-            if i == 0:
-                prob += rm_inv[p][w] == rm_purchased[p][w] - total_prod[p][w]
-            else:
-                prob += rm_inv[p][w] == rm_inv[p][WEEKS[i-1]] + rm_purchased[p][w] - total_prod[p][w]
+            if i == 0: prob += rm_inv[p][w] == rm_purchased[p][w] - total_prod[p][w]
+            else: prob += rm_inv[p][w] == rm_inv[p][WEEKS[i-1]] + rm_purchased[p][w] - total_prod[p][w]
 
             # FG Inventory Balance
-            total_dem = UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w]
+            total_dem = UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w] + (rollover[p][WEEKS[i-1]] if i > 0 else 0)
             prob += sold[p][w] <= total_dem
             
             if i == 0: 
@@ -201,6 +195,7 @@ def optimize_operations(lines, capacity_limit):
             prob += expedited_sold[p][w] <= WEEKLY_CHASE[p][w]
             prob += expedited_sold[p][w] <= sold[p][w]
             prob += shortage[p][w] == total_dem - sold[p][w]
+            prob += rollover[p][w] == shortage[p][w] * rollover_pct
             
             for l in lines:
                 if FINANCIALS[p][l]["rate"] > 0:
@@ -217,42 +212,31 @@ def optimize_operations(lines, capacity_limit):
             prob += pulp.lpSum(time_used) <= capacity_limit * line_active[l][w]
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=15))
-    return prob, total_prod, fg_inv, rm_inv, sold, shortage, prod_line, s_line_v, expedited_sold
+    return prob, total_prod, fg_inv, rm_inv, sold, shortage, prod_line, setup_line, expedited_sold, line_active, rollover
 
 # --- 6. EXECUTION ---
 def get_val(var): return var.varValue if var.varValue is not None else 0
 
 with st.spinner(f"Simulating 13-Week Quarter: {active_scenario}..."):
-    # Passing s_line_v cleanly
-    prob, total_prod, fg_inv, rm_inv, sold, shortage, prod_line, setup_line, expedited_sold = optimize_operations(LINES, weekly_capacity)
+    prob, total_prod, fg_inv, rm_inv, sold, shortage, prod_line, setup_line, expedited_sold, line_active, rollover = optimize_operations(LINES, weekly_capacity)
 
 # --- 7. TABS & VISUALS ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 1. CFO CapEx & ROIC", "📈 2. Operations & Matching", "⚙️ 3. Machine Routing", "💰 4. Unit Economics", "📥 5. Volumes & Downloads"])
 
-# Calculate Global KPIs
+# Calculate Global KPIs using exactly matching variables
 rev = sum([get_val(sold[p][w]) * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
 expedite_rev = sum([get_val(expedited_sold[p][w]) * FINANCIALS[p]["premium"] for p in PRODUCTS for w in WEEKS])
 topline = rev + expedite_rev
 
-# Material cost based on actual production consumption in this simplified view for the P&L
+# Material cost based on actual production consumption in this simplified P&L view
 mat_cost = sum([get_val(total_prod[p][w]) * FINANCIALS[p]["cost"] for p in PRODUCTS for w in WEEKS])
 setups = sum([get_val(setup_line[p][l][w]) * FINANCIALS[p][l]["cost"] for p in PRODUCTS for l in LINES for w in WEEKS])
 capital_hold_cost = sum([(get_val(fg_inv[p][w]) + get_val(rm_inv[p][w])) * FINANCIALS[p]["cost"] * wc_rate for p in PRODUCTS for w in WEEKS])
 fixed_wh_lease = (max_rm_cbm + max_fg_cbm) * wh_cbm_cost * len(WEEKS)
 
 fines = sum([get_val(shortage[p][w]) * FINANCIALS[p]["fine"] for p in PRODUCTS for w in WEEKS])
-
 labor = sum([((get_val(prod_line[p][l][w]) / FINANCIALS[p][l]["rate"]) + (get_val(setup_line[p][l][w]) * FINANCIALS[p][l]["time"])) * labor_rate for p in PRODUCTS for l in LINES for w in WEEKS if FINANCIALS[p][l]["rate"] > 0])
-
-# active lines determination
-active_wks = 0
-overhead = 0
-for l in LINES:
-    for w in WEEKS:
-        active = any(get_val(setup_line[p][l][w]) > 0 for p in PRODUCTS) or any(get_val(prod_line[p][l][w]) > 0 for p in PRODUCTS)
-        if active:
-            active_wks += 1
-            overhead += fixed_line_cost
+overhead = sum([get_val(line_active[l][w]) * fixed_line_cost for l in LINES for w in WEEKS])
 
 ebit = topline - (mat_cost + setups + capital_hold_cost + fixed_wh_lease + fines + labor + overhead)
 nopat = ebit * (1 - corp_tax)
@@ -268,6 +252,8 @@ with tab1:
     c3.metric("Annualized NOPAT", f"£{annualized_nopat:,.0f}")
     c4.metric("Annualized ROIC", f"{roic:.1f}%")
     
+    
+    
     st.markdown("---")
     def pct(val): return f"{(val / topline) * 100:.1f}%" if topline > 0 else "0.0%"
     pl_df = pd.DataFrame({
@@ -279,7 +265,6 @@ with tab1:
 
 with tab2:
     st.subheader("Quarterly Supply & Demand Matching")
-    
     match_data = []
     for p in PRODUCTS:
         dem = sum([UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w] for w in WEEKS])
@@ -290,7 +275,6 @@ with tab2:
         
     match_df = pd.DataFrame(match_data)
     
-    # Altair Bar Chart for Supply vs Demand
     chart_df = match_df.melt(id_vars=["Product"], value_vars=["Total Demanded", "Total Delivered"], var_name="Metric", value_name="Units")
     chart = alt.Chart(chart_df).mark_bar().encode(
         x=alt.X('Product:N', title=''),
@@ -304,12 +288,12 @@ with tab2:
 
 with tab3:
     st.subheader(f"Machine Routing Map")
+    
     for l in LINES:
         st.markdown(f"#### 🏭 {l}")
         l_data = []
         for w in WEEKS:
-            active = any(get_val(setup_line[p][l][w]) > 0 for p in PRODUCTS) or any(get_val(prod_line[p][l][w]) > 0 for p in PRODUCTS)
-            if not active:
+            if get_val(line_active[l][w]) == 0:
                 l_data.append({"Week": w, "Status": "🛑 SHUT DOWN"})
                 continue
             row = {"Week": w, "Status": "🟢 ACTIVE"}
