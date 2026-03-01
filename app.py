@@ -8,8 +8,8 @@ st.set_page_config(page_title="PwC Value Creation: Operations Masterclass", layo
 st.title("💎 Strategy & Value Creation: High-Utilization Optimizer")
 st.markdown("**Assumption:** Single shared production line running at ~80% baseline utilization.")
 
-# --- 1. CONFIGURATION ---
-WEEKS = [f"W{i+1}" for i in range(24)]
+# --- 1. CONFIGURATION (12-Week Planning Horizon) ---
+WEEKS = [f"W{i+1}" for i in range(12)]
 PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
 
 FINANCIALS = {
@@ -18,7 +18,7 @@ FINANCIALS = {
     "Knee Sleeves":  {"price": 45, "cost": 22, "rate": 40,  "co_time": 4, "co_cost": 1200}
 }
 
-# --- 2. SIDEBAR CONTROLS ---
+# --- 2. SIDEBAR CONTROLS (Form-Controlled) ---
 with st.sidebar:
     st.header("🏢 Operating Strategy")
     with st.form("control_panel"):
@@ -32,6 +32,7 @@ with st.sidebar:
         stockout_fine = st.slider("Lost Sale Penalty (£/unit)", 0, 50, 15)
         holding_cost = st.slider("Holding Cost (£/unit/wk)", 0.1, 2.0, 0.2)
         
+        # This button prevents the app from auto-reloading until you are ready
         submitted = st.form_submit_button("🚀 Run Optimization")
 
 # --- 3. BASE DEMAND GENERATION ---
@@ -40,15 +41,15 @@ def get_base_demand():
     np.random.seed(42)
     data = {}
     for p in PRODUCTS:
-        base = np.random.randint(800, 1200, 24)
-        peak = [800 if 10 < i < 16 else 0 for i in range(24)] # Holiday Peak
-        data[p] = {WEEKS[i]: base[i] + peak[i] for i in range(24)}
+        base = np.random.randint(800, 1200, 12)
+        peak = [800 if 4 < i < 8 else 0 for i in range(12)] # Peak hits in Weeks 5-7
+        data[p] = {WEEKS[i]: base[i] + peak[i] for i in range(12)}
     return data
 
 BASE_DEMAND = get_base_demand()
 
 # --- 4. THE SOLVER ---
-def optimize_operations(strat):
+def optimize_operations(strat, capacity_limit):
     prob = pulp.LpProblem("Value_Model", pulp.LpMaximize)
     
     prod = pulp.LpVariable.dicts("Prod", (PRODUCTS, WEEKS), lowBound=0)
@@ -58,6 +59,7 @@ def optimize_operations(strat):
     rollover = pulp.LpVariable.dicts("Rollover", (PRODUCTS, WEEKS), lowBound=0)
     setup = pulp.LpVariable.dicts("Setup", (PRODUCTS, WEEKS), cat=pulp.LpBinary)
     
+    # Objective: Maximize Profit
     revenue = pulp.lpSum([sold[p][w] * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
     costs = pulp.lpSum([
         prod[p][w] * FINANCIALS[p]["cost"] + 
@@ -70,6 +72,7 @@ def optimize_operations(strat):
 
     for p in PRODUCTS:
         for i, w in enumerate(WEEKS):
+            # Demand includes baseline + whatever rolled over from last week
             if i == 0: total_demand = BASE_DEMAND[p][w]
             else: total_demand = BASE_DEMAND[p][w] + rollover[p][WEEKS[i-1]]
             
@@ -82,33 +85,36 @@ def optimize_operations(strat):
             
             if i == 0: prob += prod[p][w] - sold[p][w] == inv[p][w]
             else: prob += inv[p][WEEKS[i-1]] + prod[p][w] - sold[p][w] == inv[p][w]
-                
-            prob += prod[p][w] <= 20000 * setup[p][w]
+            
+            # TIGHTENED BIG-M CONSTRAINT: Speeds up the solver massively
+            max_possible_production = capacity_limit * FINANCIALS[p]["rate"]
+            prob += prod[p][w] <= max_possible_production * setup[p][w]
 
     for w in WEEKS:
         # Physical Capacity Constraint
-        prob += pulp.lpSum([(prod[p][w]/FINANCIALS[p]["rate"]) + (setup[p][w]*FINANCIALS[p]["co_time"]) for p in PRODUCTS]) <= weekly_capacity
+        prob += pulp.lpSum([(prod[p][w]/FINANCIALS[p]["rate"]) + (setup[p][w]*FINANCIALS[p]["co_time"]) for p in PRODUCTS]) <= capacity_limit
         
         # Legacy Logic
         if strat == "Legacy: Max 1 Setup/Week (Big Batches)":
             prob += pulp.lpSum([setup[p][w] for p in PRODUCTS]) <= 1
 
-    # THE FIX: Added a 10-second time limit so it never hangs
+    # Solve with a strict 10-second time limit
     prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=10))
     return prob, prod, inv, sold, short, roll, setup
 
-# Helper function to prevent crashes if solver hits time limit
+# Helper function to prevent UI crashes if solver returns None
 def get_val(var):
     return var.varValue if var.varValue is not None else 0
 
 # --- 5. EXECUTION ---
-# UI Spinner so you know it's working
 with st.spinner("Crunching the MILP Matrix (This may take up to 10 seconds)..."):
-    prob_status, prod_v, inv_v, sold_v, short_v, roll_v, setup_v = optimize_operations(mode)
+    prob_status, prod_v, inv_v, sold_v, short_v, roll_v, setup_v = optimize_operations(mode, weekly_capacity)
 
-# Warn if the time limit was hit
+# Feedback Banner
 if pulp.LpStatus[prob_status.status] != 'Optimal':
-    st.warning(f"Solver Status: {pulp.LpStatus[prob_status.status]}. The problem is highly constrained. Displaying the best solution found within the time limit.")
+    st.warning(f"⚠️ **Optimality Gap Detected:** The solver hit the 10-second limit (Status: {pulp.LpStatus[prob_status.status]}). Displaying the best margin found within the time limit.")
+else:
+    st.success("✅ **Optimal Schedule Found:** The solver mathematically proved this is the most profitable schedule possible.")
 
 # --- 6. TABS & VISUALS ---
 tab1, tab2, tab3, tab4 = st.tabs(["💰 Item Economics", "⚙️ Line Utilization", "📦 Supply/Demand Audit", "📈 P&L Statement"])
