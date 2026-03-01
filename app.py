@@ -100,7 +100,9 @@ def optimize_operations(strat, capacity_limit):
 
     # Solve with a strict 10-second time limit
     prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=10))
-    return prob, prod, inv, sold, short, roll, setup
+    
+    # THE FIX: Changed 'short' to 'shortage' and 'roll' to 'rollover'
+    return prob, prod, inv, sold, shortage, rollover, setup
 
 # Helper function to prevent UI crashes if solver returns None
 def get_val(var):
