@@ -2,32 +2,71 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pulp
+import io
 
 st.set_page_config(page_title="PwC Value Creation: Operations Masterclass", layout="wide")
 
 st.title("💎 Strategy & Value Creation: High-Utilization Optimizer")
-st.markdown("**Assumption:** Single shared production line running at ~80% baseline utilization.")
+st.markdown("**Assumption:** Single shared production line. Upload your own Excel data or use the default Demo scenario.")
 
-# --- 1. CONFIGURATION (12-Week Planning Horizon) ---
-WEEKS = [f"W{i+1}" for i in range(12)]
-PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
+# --- 1. DEFAULT DATA (Demo Mode) ---
+DEFAULT_WEEKS = [f"W{i+1}" for i in range(12)]
+DEFAULT_PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
 
-FINANCIALS = {
+DEFAULT_FINANCIALS = {
     "Lifting Straps": {"price": 25, "cost": 10, "rate": 60, "co_time": 2, "co_cost": 500},
     "Weight Belts":  {"price": 85, "cost": 45, "rate": 25,  "co_time": 8, "co_cost": 2500},
     "Knee Sleeves":  {"price": 45, "cost": 22, "rate": 40,  "co_time": 4, "co_cost": 1200}
 }
 
-# --- 2. SIDEBAR CONTROLS ---
+@st.cache_data
+def get_default_demand():
+    np.random.seed(42)
+    data = {}
+    for p in DEFAULT_PRODUCTS:
+        base = np.random.randint(800, 1200, 12)
+        peak = [800 if 4 < i < 8 else 0 for i in range(12)] 
+        data[p] = {DEFAULT_WEEKS[i]: base[i] + peak[i] for i in range(12)}
+    return data
+
+DEFAULT_DEMAND = get_default_demand()
+
+# --- 2. EXCEL TEMPLATE GENERATOR ---
+def generate_excel_template():
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Economics Sheet
+        eco_df = pd.DataFrame([
+            {"Product": "Lifting Straps", "Price": 25, "Cost": 10, "Rate": 60, "Setup_Time": 2, "Setup_Cost": 500},
+            {"Product": "Weight Belts", "Price": 85, "Cost": 45, "Rate": 25, "Setup_Time": 8, "Setup_Cost": 2500},
+            {"Product": "Knee Sleeves", "Price": 45, "Cost": 22, "Rate": 40, "Setup_Time": 4, "Setup_Cost": 1200}
+        ])
+        eco_df.to_excel(writer, sheet_name="Economics", index=False)
+        
+        # Demand Sheet
+        dem_data = {"Product": ["Lifting Straps", "Weight Belts", "Knee Sleeves"]}
+        for w in DEFAULT_WEEKS:
+            dem_data[w] = [DEFAULT_DEMAND[p][w] for p in DEFAULT_PRODUCTS]
+        pd.DataFrame(dem_data).to_excel(writer, sheet_name="Demand", index=False)
+    return output.getvalue()
+
+# --- 3. SIDEBAR: DATA UPLOAD & CONTROLS ---
 with st.sidebar:
-    st.header("🏢 Operating Strategy")
+    st.header("📂 1. Data Input")
+    st.download_button(
+        label="📥 Download Data Template",
+        data=generate_excel_template(),
+        file_name="pwc_optimization_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    uploaded_file = st.file_uploader("Upload filled Excel Template", type=["xlsx"])
+    
+    st.markdown("---")
+    st.header("🏢 2. Strategy & Parameters")
     with st.form("control_panel"):
         mode = st.radio("Model", ["Legacy: Max 1 Setup/Week (Big Batches)", "MILP: Value Optimized (Agile)"])
-        
-        st.header("⚙️ Capacity")
         weekly_capacity = st.slider("Weekly Machine Hours", 80, 168, 120)
-        
-        st.header("📊 Demand & Commercial Risk")
         rollover_pct = st.slider("Demand Rollover (%)", 0, 100, 50) / 100.0
         stockout_fine = st.slider("Lost Sale Penalty (£/unit)", 0, 50, 15)
         holding_cost = st.slider("Holding Cost (£/unit/wk)", 0.1, 2.0, 0.2)
@@ -35,20 +74,41 @@ with st.sidebar:
         
         submitted = st.form_submit_button("🚀 Run Optimization")
 
-# --- 3. BASE DEMAND GENERATION ---
-@st.cache_data
-def get_base_demand():
-    np.random.seed(42)
-    data = {}
-    for p in PRODUCTS:
-        base = np.random.randint(800, 1200, 12)
-        peak = [800 if 4 < i < 8 else 0 for i in range(12)] # Peak hits in Weeks 5-7
-        data[p] = {WEEKS[i]: base[i] + peak[i] for i in range(12)}
-    return data
+# --- 4. DATA PROCESSING (Excel or Demo) ---
+try:
+    if uploaded_file is not None:
+        # Read user data
+        eco_df = pd.read_excel(uploaded_file, sheet_name="Economics")
+        dem_df = pd.read_excel(uploaded_file, sheet_name="Demand")
+        
+        PRODUCTS = eco_df["Product"].tolist()
+        WEEKS = [col for col in dem_df.columns if col != "Product"]
+        
+        FINANCIALS = {}
+        for _, row in eco_df.iterrows():
+            FINANCIALS[row["Product"]] = {
+                "price": row["Price"], "cost": row["Cost"], 
+                "rate": row["Rate"], "co_time": row["Setup_Time"], "co_cost": row["Setup_Cost"]
+            }
+            
+        BASE_DEMAND = {}
+        for _, row in dem_df.iterrows():
+            BASE_DEMAND[row["Product"]] = {w: row[w] for w in WEEKS}
+            
+        st.success(f"✅ Loaded Custom Data: {len(PRODUCTS)} Products over {len(WEEKS)} Weeks.")
+    else:
+        # Use Demo Data
+        PRODUCTS = DEFAULT_PRODUCTS
+        WEEKS = DEFAULT_WEEKS
+        FINANCIALS = DEFAULT_FINANCIALS
+        BASE_DEMAND = DEFAULT_DEMAND
+        st.info("ℹ️ Using Demo Data. Upload an Excel file to run your own scenario.")
 
-BASE_DEMAND = get_base_demand()
+except Exception as e:
+    st.error(f"❌ Error reading Excel file. Please ensure it matches the downloaded template format. ({str(e)})")
+    st.stop() # Stop execution if data is broken
 
-# --- 4. THE SOLVER ---
+# --- 5. THE SOLVER ---
 def optimize_operations(strat, capacity_limit):
     prob = pulp.LpProblem("Value_Model", pulp.LpMaximize)
     
@@ -59,10 +119,8 @@ def optimize_operations(strat, capacity_limit):
     rollover = pulp.LpVariable.dicts("Rollover", (PRODUCTS, WEEKS), lowBound=0)
     setup = pulp.LpVariable.dicts("Setup", (PRODUCTS, WEEKS), cat=pulp.LpBinary)
     
-    # Objective: Maximize Profit
     revenue = pulp.lpSum([sold[p][w] * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
     agility_rev = pulp.lpSum([inv[p][w] * agility_premium for p in PRODUCTS for w in WEEKS])
-    
     costs = pulp.lpSum([
         prod[p][w] * FINANCIALS[p]["cost"] + 
         inv[p][w] * holding_cost + 
@@ -92,14 +150,13 @@ def optimize_operations(strat, capacity_limit):
 
     for w in WEEKS:
         prob += pulp.lpSum([(prod[p][w]/FINANCIALS[p]["rate"]) + (setup[p][w]*FINANCIALS[p]["co_time"]) for p in PRODUCTS]) <= capacity_limit
-        
         if strat == "Legacy: Max 1 Setup/Week (Big Batches)":
             prob += pulp.lpSum([setup[p][w] for p in PRODUCTS]) <= 1
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=10))
     return prob, prod, inv, sold, shortage, rollover, setup
 
-# --- 5. EXECUTION ---
+# --- 6. EXECUTION ---
 def get_val(var):
     return var.varValue if var.varValue is not None else 0
 
@@ -108,16 +165,13 @@ with st.spinner("Crunching the MILP Matrix (This may take up to 10 seconds)...")
 
 if pulp.LpStatus[prob_status.status] != 'Optimal':
     st.warning(f"⚠️ **Optimality Gap Detected:** Status: {pulp.LpStatus[prob_status.status]}. Displaying best margin found within time limit.")
-else:
-    st.success("✅ **Optimal Schedule Found**")
 
-# --- 6. TABS & VISUALS ---
+# --- 7. TABS & VISUALS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📈 Strategic P&L", "⚙️ Line Utilization", "📦 Supply/Demand Audit", "💰 Item Economics"])
 
 with tab1:
     st.subheader(f"Executive Summary: {mode}")
     
-    # Calculate global metrics for the KPIs
     rev = sum([get_val(sold_v[p][w]) * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
     agility = sum([get_val(inv_v[p][w]) * agility_premium for p in PRODUCTS for w in WEEKS])
     cogs = sum([get_val(prod_v[p][w]) * FINANCIALS[p]["cost"] for p in PRODUCTS for w in WEEKS])
@@ -127,7 +181,6 @@ with tab1:
     
     net = (rev + agility) - (cogs + setups + holding + fines)
     
-    # Aggregate Service Level and Factory Utilization
     glob_demand = sum([BASE_DEMAND[p][w] + (get_val(roll_v[p][WEEKS[WEEKS.index(w)-1]]) if WEEKS.index(w) > 0 else 0) for p in PRODUCTS for w in WEEKS])
     glob_sold = sum([get_val(sold_v[p][w]) for p in PRODUCTS for w in WEEKS])
     service_level = (glob_sold / glob_demand * 100) if glob_demand > 0 else 0
@@ -136,7 +189,6 @@ with tab1:
     used_factory_hrs = sum([(get_val(prod_v[p][w]) / FINANCIALS[p]["rate"]) + (get_val(setup_v[p][w]) * FINANCIALS[p]["co_time"]) for p in PRODUCTS for w in WEEKS])
     overall_utilization = (used_factory_hrs / total_factory_hrs * 100) if total_factory_hrs > 0 else 0
     
-    # --- EXECUTIVE KPI DASHBOARD ---
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Net Contribution (£)", f"£{net:,.0f}")
     kpi2.metric("Overall Service Level (%)", f"{service_level:.1f}%")
@@ -145,15 +197,7 @@ with tab1:
     st.markdown("---")
     
     pl_df = pd.DataFrame({
-        "Financial Line Item": [
-            "Gross Sales Revenue", 
-            "Agility Premium Earned", 
-            "Total COGS", 
-            "Changeover Expenses", 
-            "Inventory Carrying Costs", 
-            "Stockout/Late Fines", 
-            "NET CONTRIBUTION"
-        ],
+        "Financial Line Item": ["Gross Sales Revenue", "Agility Premium Earned", "Total COGS", "Changeover Expenses", "Inventory Carrying Costs", "Stockout/Late Fines", "NET CONTRIBUTION"],
         "Amount (£)": [rev, agility, -cogs, -setups, -holding, -fines, net]
     })
     st.table(pl_df)
@@ -210,7 +254,6 @@ with tab4:
     for p, metrics in FINANCIALS.items():
         unit_margin = metrics['price'] - metrics['cost']
         hourly_profit = unit_margin * metrics['rate']
-        
         eco_data.append({
             "Product": p,
             "Unit Price": f"£{metrics['price']:.2f}",
@@ -222,5 +265,3 @@ with tab4:
             "Setup Cost": f"£{metrics['co_cost']}"
         })
     st.table(pd.DataFrame(eco_data))
-    
-    st.info("💡 **Consultant Insight:** While Hourly Profitability is a massive driver, the MILP doesn't blindly chase it. It calculates the exact trade-off: 'Is the high £/hour of Weight Belts worth burning 8 hours of zero-production setup time and a £2,500 fee?' It balances that against holding costs and stockout fines to find the true mathematical peak.")
