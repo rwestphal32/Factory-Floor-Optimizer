@@ -31,7 +31,7 @@ with st.sidebar:
         rollover_pct = st.slider("Demand Rollover (%)", 0, 100, 50) / 100.0
         stockout_fine = st.slider("Lost Sale Penalty (£/unit)", 0, 50, 15)
         holding_cost = st.slider("Holding Cost (£/unit/wk)", 0.1, 2.0, 0.2)
-        agility_premium = st.slider("Agility Premium (£/unit in stock)", 0, 15, 5) # THE RETURN OF AGILITY
+        agility_premium = st.slider("Agility Premium (£/unit in stock)", 0, 15, 5)
         
         submitted = st.form_submit_button("🚀 Run Optimization")
 
@@ -59,7 +59,7 @@ def optimize_operations(strat, capacity_limit):
     rollover = pulp.LpVariable.dicts("Rollover", (PRODUCTS, WEEKS), lowBound=0)
     setup = pulp.LpVariable.dicts("Setup", (PRODUCTS, WEEKS), cat=pulp.LpBinary)
     
-    # Objective: Maximize Profit (Now including Agility Premium)
+    # Objective: Maximize Profit
     revenue = pulp.lpSum([sold[p][w] * FINANCIALS[p]["price"] for p in PRODUCTS for w in WEEKS])
     agility_rev = pulp.lpSum([inv[p][w] * agility_premium for p in PRODUCTS for w in WEEKS])
     
@@ -112,89 +112,9 @@ else:
     st.success("✅ **Optimal Schedule Found**")
 
 # --- 6. TABS & VISUALS ---
-tab1, tab2, tab3, tab4 = st.tabs(["💰 Item Economics", "⚙️ Line Utilization", "📦 Supply/Demand Audit", "📈 Strategic P&L"])
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Strategic P&L", "⚙️ Line Utilization", "📦 Supply/Demand Audit", "💰 Item Economics"])
 
 with tab1:
-    st.subheader("SKU Financial & Operational Profiles")
-    eco_data = []
-    for p, metrics in FINANCIALS.items():
-        unit_margin = metrics['price'] - metrics['cost']
-        hourly_profit = unit_margin * metrics['rate']
-        
-        eco_data.append({
-            "Product": p,
-            "Unit Price": f"£{metrics['price']:.2f}",
-            "Unit Cost": f"£{metrics['cost']:.2f}",
-            "Unit Margin": f"£{unit_margin:.2f}",
-            "Units / Hour": metrics['rate'],
-            "Hourly Profitability": f"£{hourly_profit:,.2f}",
-            "Setup Time (Hrs)": metrics['co_time'],
-            "Setup Cost": f"£{metrics['co_cost']}"
-        })
-    st.table(pd.DataFrame(eco_data))
-    
-    
-    
-    st.info("💡 **Consultant Insight:** Hourly Profitability is the most critical metric for the MILP. When capacity is constrained, the solver will prioritize products that generate the most £ per hour of machine time.")
-
-with tab2:
-    st.subheader(f"Factory Schedule & Line Utilization ({mode})")
-    sched_data = []
-    total_factory_hrs = 0
-    used_factory_hrs = 0
-    
-    for w in WEEKS:
-        row = {"Week": w}
-        total_hrs = 0
-        for p in PRODUCTS:
-            p_hrs = get_val(prod_v[p][w]) / FINANCIALS[p]["rate"]
-            s_hrs = get_val(setup_v[p][w]) * FINANCIALS[p]["co_time"]
-            total_hrs += (p_hrs + s_hrs)
-            
-            status = []
-            if p_hrs > 0: status.append(f"Prod: {p_hrs:.1f}h")
-            if s_hrs > 0: status.append(f"Setup: {s_hrs:.1f}h")
-            row[p] = " | ".join(status) if status else "-"
-            
-        row["Total Hrs Used"] = f"{total_hrs:.1f}"
-        row["Utilization"] = f"{(total_hrs / weekly_capacity) * 100:.1f}%"
-        sched_data.append(row)
-        
-        used_factory_hrs += total_hrs
-        total_factory_hrs += weekly_capacity
-        
-    st.dataframe(pd.DataFrame(sched_data), use_container_width=True)
-
-with tab3:
-    st.subheader("Transparent Inventory & Fulfillment Audit")
-    sku = st.selectbox("Select SKU to Audit", PRODUCTS)
-    
-    audit_data = []
-    total_sku_demand = 0
-    total_sku_sold = 0
-    
-    for i, w in enumerate(WEEKS):
-        base = BASE_DEMAND[sku][w]
-        roll = get_val(roll_v[sku][WEEKS[i-1]]) if i > 0 else 0
-        tot_dem = base + roll
-        sold = get_val(sold_v[sku][w])
-        
-        total_sku_demand += tot_dem
-        total_sku_sold += sold
-        
-        audit_data.append({
-            "Week": w,
-            "Base Demand": int(base),
-            "+ Rollover In": int(roll),
-            "= Total Demand": int(tot_dem),
-            "Production": int(get_val(prod_v[sku][w])),
-            "Units Sold": int(sold),
-            "Ending Inventory": int(get_val(inv_v[sku][w])),
-            "Missed (Shortage)": int(get_val(short_v[sku][w]))
-        })
-    st.dataframe(pd.DataFrame(audit_data), use_container_width=True)
-
-with tab4:
     st.subheader(f"Executive Summary: {mode}")
     
     # Calculate global metrics for the KPIs
@@ -207,10 +127,13 @@ with tab4:
     
     net = (rev + agility) - (cogs + setups + holding + fines)
     
-    # Aggregate Service Level
+    # Aggregate Service Level and Factory Utilization
     glob_demand = sum([BASE_DEMAND[p][w] + (get_val(roll_v[p][WEEKS[WEEKS.index(w)-1]]) if WEEKS.index(w) > 0 else 0) for p in PRODUCTS for w in WEEKS])
     glob_sold = sum([get_val(sold_v[p][w]) for p in PRODUCTS for w in WEEKS])
     service_level = (glob_sold / glob_demand * 100) if glob_demand > 0 else 0
+    
+    total_factory_hrs = weekly_capacity * len(WEEKS)
+    used_factory_hrs = sum([(get_val(prod_v[p][w]) / FINANCIALS[p]["rate"]) + (get_val(setup_v[p][w]) * FINANCIALS[p]["co_time"]) for p in PRODUCTS for w in WEEKS])
     overall_utilization = (used_factory_hrs / total_factory_hrs * 100) if total_factory_hrs > 0 else 0
     
     # --- EXECUTIVE KPI DASHBOARD ---
@@ -234,3 +157,70 @@ with tab4:
         "Amount (£)": [rev, agility, -cogs, -setups, -holding, -fines, net]
     })
     st.table(pl_df)
+
+with tab2:
+    st.subheader(f"Factory Schedule & Line Utilization ({mode})")
+    sched_data = []
+    
+    for w in WEEKS:
+        row = {"Week": w}
+        total_hrs = 0
+        for p in PRODUCTS:
+            p_hrs = get_val(prod_v[p][w]) / FINANCIALS[p]["rate"]
+            s_hrs = get_val(setup_v[p][w]) * FINANCIALS[p]["co_time"]
+            total_hrs += (p_hrs + s_hrs)
+            
+            status = []
+            if p_hrs > 0: status.append(f"Prod: {p_hrs:.1f}h")
+            if s_hrs > 0: status.append(f"Setup: {s_hrs:.1f}h")
+            row[p] = " | ".join(status) if status else "-"
+            
+        row["Total Hrs Used"] = f"{total_hrs:.1f}"
+        row["Utilization"] = f"{(total_hrs / weekly_capacity) * 100:.1f}%"
+        sched_data.append(row)
+        
+    st.dataframe(pd.DataFrame(sched_data), use_container_width=True)
+
+with tab3:
+    st.subheader("Transparent Inventory & Fulfillment Audit")
+    sku = st.selectbox("Select SKU to Audit", PRODUCTS)
+    
+    audit_data = []
+    for i, w in enumerate(WEEKS):
+        base = BASE_DEMAND[sku][w]
+        roll = get_val(roll_v[sku][WEEKS[i-1]]) if i > 0 else 0
+        tot_dem = base + roll
+        sold = get_val(sold_v[sku][w])
+        
+        audit_data.append({
+            "Week": w,
+            "Base Demand": int(base),
+            "+ Rollover In": int(roll),
+            "= Total Demand": int(tot_dem),
+            "Production": int(get_val(prod_v[sku][w])),
+            "Units Sold": int(sold),
+            "Ending Inventory": int(get_val(inv_v[sku][w])),
+            "Missed (Shortage)": int(get_val(short_v[sku][w]))
+        })
+    st.dataframe(pd.DataFrame(audit_data), use_container_width=True)
+
+with tab4:
+    st.subheader("SKU Financial & Operational Profiles")
+    eco_data = []
+    for p, metrics in FINANCIALS.items():
+        unit_margin = metrics['price'] - metrics['cost']
+        hourly_profit = unit_margin * metrics['rate']
+        
+        eco_data.append({
+            "Product": p,
+            "Unit Price": f"£{metrics['price']:.2f}",
+            "Unit Cost": f"£{metrics['cost']:.2f}",
+            "Unit Margin": f"£{unit_margin:.2f}",
+            "Units / Hour": metrics['rate'],
+            "Hourly Profitability": f"£{hourly_profit:,.2f}",
+            "Setup Time (Hrs)": metrics['co_time'],
+            "Setup Cost": f"£{metrics['co_cost']}"
+        })
+    st.table(pd.DataFrame(eco_data))
+    
+    st.info("💡 **Consultant Insight:** While Hourly Profitability is a massive driver, the MILP doesn't blindly chase it. It calculates the exact trade-off: 'Is the high £/hour of Weight Belts worth burning 8 hours of zero-production setup time and a £2,500 fee?' It balances that against holding costs and stockout fines to find the true mathematical peak.")
