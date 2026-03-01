@@ -11,7 +11,9 @@ st.markdown("**Objective:** 13-Week Quarterly CapEx evaluation using Mean/StDev 
 
 # --- 1. CONFIGURATION (13 Weeks = 1 Quarter) ---
 WEEKS = [f"W{i+1}" for i in range(13)]
-PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
+
+# CRITICAL FIX: Ensure DEFAULT_PRODUCTS is defined before any function calls it
+DEFAULT_PRODUCTS = ["Lifting Straps", "Weight Belts", "Knee Sleeves"]
 
 # SCENARIO A: Dedicated (High Efficiency, Rigid)
 SCENARIO_A = {
@@ -26,6 +28,19 @@ SCENARIO_B = {
     "Weight Belts": {"price": 85, "cost": 45, "fine": 30, "premium": 15, "vol_cbm": 0.20, "mean_dem": 1200, "std_dev": 600, "L1": {"rate": 25, "time": 2, "cost": 500}, "L2": {"rate": 25, "time": 2, "cost": 500}, "L3": {"rate": 25, "time": 2, "cost": 500}},
     "Knee Sleeves": {"price": 45, "cost": 22, "fine": 15, "premium": 5, "vol_cbm": 0.10, "mean_dem": 2000, "std_dev": 400, "L1": {"rate": 40, "time": 2, "cost": 500}, "L2": {"rate": 40, "time": 2, "cost": 500}, "L3": {"rate": 40, "time": 2, "cost": 500}}
 }
+
+@st.cache_data
+def get_default_demand():
+    np.random.seed(42)
+    q_forecast, w_chase = {}, {}
+    for p in DEFAULT_PRODUCTS:
+        base = 3500 if "Straps" in p else (1200 if "Belts" in p else 2000)
+        spike = 2000 if "Straps" in p else (1500 if "Belts" in p else 2000)
+        q_forecast[p] = {WEEKS[i]: np.random.randint(int(base*0.9), int(base*1.1)) for i in range(13)}
+        w_chase[p] = {WEEKS[i]: (spike if 4 < i < 8 else 0) for i in range(13)}
+    return q_forecast, w_chase
+
+DEFAULT_FORECAST, DEFAULT_CHASE = get_default_demand()
 
 # --- 2. EXCEL TEMPLATE GENERATOR ---
 def generate_excel_template():
@@ -262,6 +277,7 @@ with tab2:
 
 with tab3:
     st.subheader(f"Machine Routing Map")
+    
     for l in LINES:
         st.markdown(f"#### 🏭 {l}")
         l_data = []
@@ -291,13 +307,9 @@ with tab4:
     st.markdown("Shows per-unit profitability. *Note: Labor cost is averaged assuming routing to the most efficient compatible line.*")
     eco_data = []
     for p, data in FINANCIALS.items():
-        # Find best rate to calculate standard labor cost
         best_rate = max([data[l]["rate"] for l in LINES if data[l]["rate"] > 0] + [1]) 
         unit_labor = labor_rate / best_rate
-        
-        # Overhead allocation approximation (Line cost / (Capacity * best rate))
         unit_overhead = fixed_line_cost / (weekly_capacity * best_rate) 
-        
         cm_gbp = data['price'] - data['cost'] - unit_labor - unit_overhead
         cm_pct = (cm_gbp / data['price']) * 100
         
@@ -315,7 +327,6 @@ with tab4:
 with tab5:
     st.subheader("Data Downloads & Audit")
     
-    # 1. Download Demand Profile
     dem_df = []
     for p in PRODUCTS:
         for w in WEEKS:
@@ -327,7 +338,6 @@ with tab5:
             })
     dem_csv = pd.DataFrame(dem_df).to_csv(index=False).encode('utf-8')
     
-    # 2. Download Machine Constraints
     mc_df = []
     for p, data in FINANCIALS.items():
         row = {"Product": p}
