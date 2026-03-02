@@ -8,7 +8,7 @@ import altair as alt
 st.set_page_config(page_title="PwC Value Creation: CM Digital Twin", layout="wide")
 
 st.title("🏭 Strategy & Value Creation: CM Factory Twin")
-st.markdown("**Context:** We are the Contract Manufacturer (CM). Our objective is to evaluate our CapEx architectures (Dedicated vs. Flexible) against erratic Purchase Orders from our Wholesaler client (e.g., Implus).")
+st.markdown("**Context:** We are the Contract Manufacturer (CM). Our objective is to evaluate our CapEx architectures (Dedicated vs. Flexible) against erratic Purchase Orders from our Wholesaler client.")
 
 # --- 1. CONFIGURATION & YOUR DEFAULT DATA ---
 WEEKS = [f"W{i+1}" for i in range(13)]
@@ -94,7 +94,7 @@ with st.sidebar:
     st.markdown("---")
     
     # STEP 1: DEMAND GENERATION
-    st.header("Step 1: Lock Implus Demand")
+    st.header("Step 1: Lock Demand")
     st.info("Generate a single stochastic path first. This ensures Scenario A and B face the exact same PO volatility.")
     
     # Process Uploaded Demand Params
@@ -290,7 +290,7 @@ used_factory_hrs = sum([((get_val(prod_line[p][l][w]) / FINANCIALS[p][l]["rate"]
 factory_utilization = (used_factory_hrs / total_factory_hrs * 100) if total_factory_hrs > 0 else 0
 
 # --- 8. VISUAL DASHBOARDS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 CFO CapEx & ROIC", "📈 CM to Implus Execution", "⚙️ Machine Routing", "💰 Unit Economics", "📥 Volumes & Data"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Quarter Financials", "📈 Operational Overview", "⚙️ Machine Routing", "💰 Unit Economics", "📥 Volumes & Data"])
 
 with tab1:
     st.subheader(f"Investment Profile: {active_scenario}")
@@ -305,8 +305,8 @@ with tab1:
     st.markdown("---")
     def pct(val): return f"{(val / topline) * 100:.1f}%" if topline > 0 else "0.0%"
     pl_df = pd.DataFrame({
-        "Financial Line Item": ["CM Revenue (from Implus POs)", "Rush Surcharges (Agile Upside)", "TOTAL CM TOPLINE", "Materials (COGS)", "Direct Labor", "Line Overhead", "Setup Costs", "Fixed WH Lease (Sunk)", "WACC Holding Cost", "Implus SLA Penalties", "QUARTERLY EBIT", "Corporate Taxes", "QUARTERLY NOPAT"],
-        "Amount (£)": [f"£{rev:,.0f}", f"£{expedite_rev:,.0f}", f"£{topline:,.0f}", f"-£{mat_cost:,.0f}", f"-£{labor:,.0f}", f"-£{overhead:,.0f}", f"-£{setups:,.0f}", f"-£{fixed_wh_lease:,.0f}", f"-£{capital_hold_cost:,.0f}", f"-£{fines:,.0f}", f"£{ebit:,.0f}", f"-£{ebit*corp_tax:,.0f}", f"£{nopat:,.0f}"],
+        "Financial Line Item": ["Revenue", "Revenue from Standard Orders", "Rush Surcharge Revenue", "Materials (COGS)", "Direct Labor", "Line Overhead", "Setup Costs", "Fixed WH Lease", "WACC Holding Cost", "SLA Penalties", "EBIT", "Corporate Taxes", "NOPAT"],
+        "Amount (£)": [f"£{topline:,.0f}", f"£{rev:,.0f}", f"£{expedite_rev:,.0f}", f"-£{mat_cost:,.0f}", f"-£{labor:,.0f}", f"-£{overhead:,.0f}", f"-£{setups:,.0f}", f"-£{fixed_wh_lease:,.0f}", f"-£{capital_hold_cost:,.0f}", f"-£{fines:,.0f}", f"£{ebit:,.0f}", f"-£{ebit*corp_tax:,.0f}", f"£{nopat:,.0f}"],
         "% of Topline": [pct(rev), pct(expedite_rev), "100.0%", pct(-mat_cost), pct(-labor), pct(-overhead), pct(-setups), pct(-fixed_wh_lease), pct(-capital_hold_cost), pct(-fines), pct(ebit), pct(-ebit*corp_tax), pct(nopat)]
     })
     st.table(pl_df)
@@ -317,7 +317,7 @@ with tab2:
     k1, k2, k3 = st.columns(3)
     k1.metric("Overall Service Level", f"{service_level:.1f}%")
     k2.metric("Factory Utilization", f"{factory_utilization:.1f}%")
-    k3.metric("Total Implus POs", f"{glob_dem:,.0f} units")
+    k3.metric("Total POs", f"{glob_dem:,.0f} units")
     st.markdown("---")
     
     match_data = []
@@ -326,10 +326,10 @@ with tab2:
         prd = sum([get_val(total_prod[p][w]) for w in WEEKS])
         sld = sum([get_val(sold[p][w]) for w in WEEKS])
         sl = (sld / dem * 100) if dem > 0 else 0
-        match_data.append({"Product": p, "Implus Demanded": dem, "CM Produced": prd, "Shipped to Implus": sld, "Service Level": sl})
+        match_data.append({"Product": p, "Demand": dem, "CM Produced": prd, "Shipped": sld, "Service Level": sl})
         
     match_df = pd.DataFrame(match_data)
-    chart_df = match_df.melt(id_vars=["Product"], value_vars=["Implus Demanded", "Shipped to Implus"], var_name="Metric", value_name="Units")
+    chart_df = match_df.melt(id_vars=["Product"], value_vars=["Demand", "Shipped"], var_name="Metric", value_name="Units")
     chart = alt.Chart(chart_df).mark_bar().encode(x=alt.X('Product:N', title=''), y=alt.Y('Units:Q', title='Units'), color='Metric:N', xOffset='Metric:N').properties(height=350, title="Quarterly Demand vs. Fulfillment by Product")
     st.altair_chart(chart, use_container_width=True)
     st.dataframe(match_df.style.format({"Service Level": "{:.1f}%"}), use_container_width=True)
@@ -373,7 +373,7 @@ with tab4:
         
         eco_data.append({
             "Product": p,
-            "CM Price to Implus": f"£{data['price']:.2f}",
+            "Price": f"£{data['price']:.2f}",
             "Material Cost": f"£{data['cost']:.2f}",
             "Labor Cost (Est.)": f"£{unit_labor:.2f}",
             "Overhead (Est.)": f"£{unit_overhead:.2f}",
@@ -407,6 +407,6 @@ with tab5:
                 "Product": p, "Week": w, 
                 "Base Forecast": UPFRONT_FORECAST[p][w], 
                 "Stochastic Surge": WEEKLY_CHASE[p][w], 
-                "Total Implus PO": UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w]
+                "Total PO": UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w]
             })
     st.download_button(label="📥 Download Active Demand Path (CSV)", data=pd.DataFrame(dem_df).to_csv(index=False).encode('utf-8'), file_name="locked_stochastic_demand.csv", mime="text/csv")
