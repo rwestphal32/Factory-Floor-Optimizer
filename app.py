@@ -344,7 +344,7 @@ with tab2:
         prd = sum([get_val(total_prod[p][w]) for w in WEEKS])
         sld = sum([get_val(sold[p][w]) for w in WEEKS])
         sl = (sld / dem * 100) if dem > 0 else 0
-        match_data.append({"Product": p, "Demand": dem, "CM Produced": prd, "Shipped": sld, "Service Level": sl})
+        match_data.append({"Product": p, "Demand": dem, "Produced": prd, "Shipped": sld, "Service Level": sl})
         
     match_df = pd.DataFrame(match_data)
     chart_df = match_df.melt(id_vars=["Product"], value_vars=["Demand", "Shipped"], var_name="Metric", value_name="Units")
