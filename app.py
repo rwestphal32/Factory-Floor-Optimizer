@@ -84,8 +84,6 @@ def generate_stochastic_demand(products_list, params_dict):
 # --- 4. SIDEBAR CONTROLS ---
 with st.sidebar:
     st.header("📂 Data Integration")
-    
-    # ADDED KEY HERE
     st.download_button("📥 Download Master Template", data=generate_excel_template(), file_name="cm_digital_twin.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_master_template")
     uploaded_file = st.file_uploader("Upload Configured Excel", type=["xlsx"])
     
@@ -106,7 +104,6 @@ with st.sidebar:
 
     col1, col2, col3 = st.columns([1, 4, 1])
     with col2:
-        # ADDED KEY HERE
         if st.button("🔒 Lock Q1 Demand Path", use_container_width=True, key="lock_demand_btn"):
             generate_stochastic_demand(ACTIVE_PRODUCTS, ACTIVE_DEMAND_PARAMS)
             st.success("Demand Locked!")
@@ -344,7 +341,8 @@ with tab2:
         prd = sum([get_val(total_prod[p][w]) for w in WEEKS])
         sld = sum([get_val(sold[p][w]) for w in WEEKS])
         sl = (sld / dem * 100) if dem > 0 else 0
-        match_data.append({"Product": p, "Demand": dem, "Produced": prd, "Shipped": sld, "Service Level": sl})
+        # INT FIX: Wrapped dem, prd, and sld in int()
+        match_data.append({"Product": p, "Demand": int(dem), "CM Produced": int(prd), "Shipped": int(sld), "Service Level": sl})
         
     match_df = pd.DataFrame(match_data)
     chart_df = match_df.melt(id_vars=["Product"], value_vars=["Demand", "Shipped"], var_name="Metric", value_name="Units")
@@ -403,13 +401,18 @@ with tab4:
 
 with tab5:
     st.subheader("Volumetric Storage Constraints")
+    st.info("💡 **Asian Sourcing Constraint:** RM Shipments only arrive once a month (W1, W5, W9). Watch the RM Arriving column to see bulk inbound orders.")
     
     wh_data = []
     for w in WEEKS:
         rm_vol = sum([get_val(rm_inv[p][w]) * FINANCIALS[p]["rm_cbm"] for p in ACTIVE_PRODUCTS])
         fg_vol = sum([get_val(fg_inv[p][w]) * FINANCIALS[p]["fg_cbm"] for p in ACTIVE_PRODUCTS])
+        # RM VISIBILITY FIX: Now explicitly calculating how many units of RM arrived this week
+        rm_arriving = sum([get_val(rm_purchased[p][w]) for p in ACTIVE_PRODUCTS])
+        
         wh_data.append({
             "Week": w, 
+            "RM Arriving (Units)": int(rm_arriving),
             "RM Volume (CBM)": f"{rm_vol:.1f}", "RM Utilization": f"{(rm_vol/max_rm_cbm)*100:.1f}%",
             "FG Volume (CBM)": f"{fg_vol:.1f}", "FG Utilization": f"{(fg_vol/max_fg_cbm)*100:.1f}%"
         })
@@ -422,9 +425,11 @@ with tab5:
         for w in WEEKS:
             dem_df.append({
                 "Product": p, "Week": w, 
-                "Base Forecast": UPFRONT_FORECAST[p][w], 
-                "Stochastic Surge": WEEKLY_CHASE[p][w], 
-                "Total PO": UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w]
+                "Base Forecast": int(UPFRONT_FORECAST[p][w]), 
+                "Stochastic Surge": int(WEEKLY_CHASE[p][w]), 
+                "Total PO": int(UPFRONT_FORECAST[p][w] + WEEKLY_CHASE[p][w]),
+                "RM Ordered": int(get_val(rm_purchased[p][w])),
+                "CM Produced": int(get_val(total_prod[p][w])),
+                "Shipped": int(get_val(sold[p][w]))
             })
-    # ADDED KEY HERE
     st.download_button(label="📥 Download Active Demand Path (CSV)", data=pd.DataFrame(dem_df).to_csv(index=False).encode('utf-8'), file_name="locked_stochastic_demand.csv", mime="text/csv", key="dl_demand_path")
